@@ -1,8 +1,8 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "maintenance-page",
+  "name": "parmar-homes-infra",
   "main": "src/index.js",
-  "compatibility_date": "2026-08-05",
+  "compatibility_date": "2024-01-01",
   "observability": {
     "enabled": true
   }
