@@ -1,286 +1,303 @@
+const FAILURE_STATUS_CODES = new Set([
+  500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 530
+]);
+
+const PORTFOLIO_ZONE = "rahulsinghparmar.site";
+const HEALTH_PATH = "/api/health";
+const RETRY_SECONDS = 45;
+
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request) {
     try {
       const response = await fetch(request);
 
-      // Intercept Cloudflare / Origin downtime status codes (502, 503, 522, 523, 524)
-      if ([502, 503, 522, 523, 524].includes(response.status)) {
-        return serveMaintenancePage();
+      if (FAILURE_STATUS_CODES.has(response.status)) {
+        return serveMaintenancePage(request);
+      }
+
+      // When Coolify stops an application, Traefik removes its router and
+      // returns a plain 404. Probe the portfolio health endpoint before
+      // deciding whether that 404 belongs to the application or the origin.
+      if (
+        response.status === 404 &&
+        ["GET", "HEAD"].includes(request.method) &&
+        isPortfolioHostname(new URL(request.url).hostname) &&
+        !(await portfolioOriginIsHealthy(request))
+      ) {
+        return serveMaintenancePage(request);
       }
 
       return response;
-    } catch (err) {
-      // If the cloudflared tunnel is completely disconnected/offline
-      return serveMaintenancePage();
+    } catch {
+      return serveMaintenancePage(request);
     }
   }
 };
 
-function serveMaintenancePage() {
-  return new Response(MAINTENANCE_HTML, {
-    status: 503, // Informs search engines & crawlers that downtime is temporary
+function isPortfolioHostname(hostname) {
+  return hostname === PORTFOLIO_ZONE || hostname.endsWith(`.${PORTFOLIO_ZONE}`);
+}
+
+async function portfolioOriginIsHealthy(request) {
+  const healthUrl = new URL(request.url);
+  healthUrl.pathname = HEALTH_PATH;
+  healthUrl.search = "";
+  healthUrl.hash = "";
+
+  try {
+    const response = await fetch(
+      new Request(healthUrl, {
+        method: "GET",
+        headers: { accept: "application/json" },
+        redirect: "manual"
+      })
+    );
+
+    return (
+      response.status === 200 &&
+      (response.headers.get("content-type") || "").includes("application/json")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function serveMaintenancePage(request) {
+  const requestUrl = new URL(request.url);
+  const hostname = requestUrl.hostname;
+  const portfolioRequest = isPortfolioHostname(hostname);
+  const identity = portfolioRequest ? "Rahul Singh Parmar" : "parmar.homes";
+  const service = portfolioRequest ? "Portfolio" : "Self-hosted service";
+  const supportSubject = encodeURIComponent(`${hostname} availability`);
+  const observedAt = new Date().toISOString();
+
+  const html = renderMaintenancePage({
+    hostname,
+    identity,
+    service,
+    supportSubject,
+    observedAt,
+    retryUrl: requestUrl.toString()
+  });
+
+  return new Response(request.method === "HEAD" ? null : html, {
+    status: 503,
     headers: {
-      "content-type": "text/html;charset=UTF-8",
-      "retry-after": "30",
-      "cache-control": "no-cache, no-store, must-revalidate"
+      "cache-control": "no-store, max-age=0",
+      "cdn-cache-control": "no-store",
+      "cloudflare-cdn-cache-control": "no-store",
+      "content-language": "en",
+      "content-security-policy":
+        "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "content-type": "text/html; charset=UTF-8",
+      "cross-origin-resource-policy": "same-origin",
+      "referrer-policy": "no-referrer",
+      "retry-after": String(RETRY_SECONDS),
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+      "x-robots-tag": "noindex, nofollow, noarchive"
     }
   });
 }
 
-// ----------------------------------------------------------------------
-// PARMAR.HOMES MAINTENANCE HTML TEMPLATE
-// ----------------------------------------------------------------------
-const MAINTENANCE_HTML = `<!DOCTYPE html>
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function renderMaintenancePage({
+  hostname,
+  identity,
+  service,
+  supportSubject,
+  observedAt,
+  retryUrl
+}) {
+  const safeHostname = escapeHtml(hostname);
+  const safeIdentity = escapeHtml(identity);
+  const safeService = escapeHtml(service);
+  const safeObservedAt = escapeHtml(observedAt);
+  const safeRetryUrl = escapeHtml(retryUrl);
+
+  return `<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>parmar.homes | Scheduled Maintenance</title>
-  
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow, noarchive">
+  <meta http-equiv="refresh" content="${RETRY_SECONDS}">
+  <meta name="theme-color" content="#f3f1e9" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0b0c0c" media="(prefers-color-scheme: dark)">
+  <title>${safeHostname} | Temporarily unavailable</title>
   <style>
-    /* --- CSS Variables --- */
     :root {
-      --bg: #0d1117;
-      --card: #161b22;
-      --border: #30363d;
-      --text: #e6edf3;
-      --muted: #8b949e;
-      --accent: #58a6ff;
-      --warn: #d29922;
-      --ok: #3fb950;
-      --down: #f85149;
+      color-scheme: light dark;
+      --bg: #f3f1e9;
+      --panel: rgba(255, 255, 255, .72);
+      --text: #161814;
+      --muted: #60645d;
+      --line: rgba(22, 24, 20, .16);
+      --accent: #a64b2a;
+      --accent-soft: rgba(166, 75, 42, .10);
+      --ok: #18794e;
+      --warn: #9a6700;
+      --shadow: 0 24px 80px rgba(42, 38, 30, .12);
     }
-
-    /* --- Global Reset --- */
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0b0c0c;
+        --panel: rgba(20, 22, 21, .82);
+        --text: #f1efe7;
+        --muted: #a9ada5;
+        --line: rgba(241, 239, 231, .14);
+        --accent: #e58a61;
+        --accent-soft: rgba(229, 138, 97, .12);
+        --ok: #6bd6a3;
+        --warn: #f0bd66;
+        --shadow: 0 28px 90px rgba(0, 0, 0, .36);
+      }
     }
-
+    * { box-sizing: border-box; }
+    html { min-width: 280px; background: var(--bg); }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background: linear-gradient(180deg, var(--bg), #111827);
+      min-height: 100vh;
+      margin: 0;
+      padding: clamp(20px, 4vw, 52px);
+      display: grid;
+      place-items: center;
+      overflow-x: hidden;
       color: var(--text);
+      background:
+        radial-gradient(circle at 14% 16%, var(--accent-soft), transparent 34%),
+        linear-gradient(145deg, var(--bg), color-mix(in srgb, var(--bg) 88%, var(--accent)));
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(100%, 880px);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      padding: clamp(24px, 6vw, 64px);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(14px);
+    }
+    .eyebrow, .meta, footer {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .eyebrow {
       display: flex;
       align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-      padding: 24px;
+      gap: 10px;
+      margin: 0 0 34px;
+      color: var(--accent);
+      font-size: .76rem;
+      font-weight: 700;
     }
-
-    /* --- Layout & Cards --- */
-    .card {
-      max-width: 760px;
-      width: 100%;
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 42px;
-      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+    .pulse {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 50%, transparent);
+      animation: pulse 2.4s ease-out infinite;
     }
-
-    .header {
-      text-align: center;
-    }
-
-    .gear {
-      font-size: 58px;
-      display: inline-block;
-      animation: spin 8s linear infinite;
-    }
-
-    /* --- Typography --- */
     h1 {
-      margin: 16px 0 10px;
-      font-size: 2rem;
+      max-width: 13ch;
+      margin: 0;
+      font-size: clamp(2.4rem, 8vw, 5.8rem);
+      font-weight: 650;
+      letter-spacing: -.065em;
+      line-height: .95;
     }
-
-    p {
+    .lede {
+      max-width: 62ch;
+      margin: 28px 0 0;
       color: var(--muted);
+      font-size: clamp(1rem, 2.2vw, 1.2rem);
       line-height: 1.7;
     }
-
-    /* --- Data Table --- */
-    .status {
-      margin: 28px 0;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      overflow: hidden;
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      margin: 42px 0 0;
+      border-block: 1px solid var(--line);
     }
-
-    .status table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-
-    .status th, 
-    .status td {
-      padding: 12px 16px;
-      text-align: left;
-    }
-
-    .status th {
-      background: #1f2937;
-    }
-
-    .status tr:not(:last-child) {
-      border-bottom: 1px solid var(--border);
-    }
-
-    /* --- Status Colors --- */
-    .ok   { color: var(--ok); }
-    .warn { color: var(--warn); }
-    .down { color: var(--down); }
-
-    /* --- Info & Badges --- */
-    .info {
-      display: flex;
-      justify-content: space-between;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin: 20px 0;
-      color: var(--muted);
-      font-size: 0.92rem;
-    }
-
-    .badge {
-      display: inline-block;
-      background: rgba(210, 153, 34, 0.15);
-      color: var(--warn);
-      padding: 10px 18px;
-      border-radius: 999px;
-      border: 1px solid rgba(210, 153, 34, 0.4);
-      font-weight: 500;
-    }
-
-    /* --- Buttons --- */
-    .actions {
-      display: flex;
-      gap: 12px;
+    .status-grid div { padding: 20px 18px 20px 0; }
+    .status-grid div + div { padding-left: 18px; border-left: 1px solid var(--line); }
+    dt { color: var(--muted); font-size: .76rem; text-transform: uppercase; letter-spacing: .08em; }
+    dd { margin: 8px 0 0; font-weight: 650; }
+    .online { color: var(--ok); }
+    .offline { color: var(--warn); }
+    .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 34px; }
+    a {
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
       justify-content: center;
-      flex-wrap: wrap;
-      margin-top: 26px;
-    }
-
-    .btn {
-      padding: 12px 22px;
-      text-decoration: none;
-      border-radius: 8px;
-      border: 1px solid var(--border);
-      background: #21262d;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 10px 18px;
       color: var(--text);
-      transition: 0.2s ease;
+      text-decoration: none;
+      font-weight: 650;
     }
-
-    .btn:hover {
-      border-color: var(--accent);
-      color: var(--accent);
-    }
-
-    /* --- Footer --- */
+    a.primary { border-color: var(--accent); background: var(--accent); color: var(--bg); }
+    a:hover { border-color: var(--accent); }
+    a:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
     footer {
-      text-align: center;
-      margin-top: 30px;
-      padding-top: 20px;
-      border-top: 1px solid var(--border);
-      color: #6e7681;
-      font-size: 0.85rem;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 10px 20px;
+      margin-top: 38px;
+      color: var(--muted);
+      font-size: .68rem;
       line-height: 1.6;
     }
-
-    /* --- Animations --- */
-    @keyframes spin {
-      from { transform: rotate(0); }
-      to   { transform: rotate(360deg); }
+    @keyframes pulse {
+      70%, 100% { box-shadow: 0 0 0 12px transparent; }
+    }
+    @media (max-width: 640px) {
+      .status-grid { grid-template-columns: 1fr; }
+      .status-grid div { padding: 16px 0; }
+      .status-grid div + div { padding-left: 0; border-left: 0; border-top: 1px solid var(--line); }
+      .actions a { width: 100%; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .pulse { animation: none; }
+      html { scroll-behavior: auto; }
     }
   </style>
 </head>
-
 <body>
-  <div class="card">
-    
-    <div class="header">
-      <div class="gear">⚙️</div>
-      <h1>Scheduled Maintenance</h1>
-      <p>The requested service is temporarily unavailable while infrastructure maintenance is in progress. Services will automatically become available once deployment and health checks are complete.</p>
-    </div>
+  <main>
+    <p class="eyebrow"><span class="pulse" aria-hidden="true"></span> Edge fallback active</p>
+    <h1>Temporarily unavailable.</h1>
+    <p class="lede">The ${safeService.toLowerCase()} cannot currently reach its private origin. Cloudflare is serving this page from the edge while connectivity, the host, or the application recovers. No action is required from you.</p>
 
-    <div class="info">
-      <div><strong>Environment:</strong> Production</div>
-      <div><strong>Version:</strong> v2.0.0</div>
-      <div><strong>Local Time:</strong> <span id="clock"></span></div>
-    </div>
-
-    <div class="status">
-      <table>
-        <thead>
-          <tr>
-            <th>Service</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>Infrastructure</td>
-            <td class="ok">● Online</td>
-          </tr>
-          <tr>
-            <td>Docker Containers</td>
-            <td class="warn">● Restarting</td>
-          </tr>
-          <tr>
-            <td>Reverse Proxy</td>
-            <td class="warn">● Reloading</td>
-          </tr>
-          <tr>
-            <td>Public Services</td>
-            <td class="down">● Temporarily Offline</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-    <div style="text-align: center;">
-      <div class="badge">Automatic retry in <span id="count">30</span> seconds</div>
-    </div>
+    <dl class="status-grid" aria-label="Availability status">
+      <div><dt>Cloudflare edge</dt><dd class="online">Online</dd></div>
+      <div><dt>${safeService} origin</dt><dd class="offline">Unavailable</dd></div>
+      <div><dt>Recovery</dt><dd>Automatic retry</dd></div>
+    </dl>
 
     <div class="actions">
-      <a class="btn" href="mailto:rahulsinghparmar4@protonmail.com?subject=parmar.homes%20Support">📧 Contact Support</a>
-      <a class="btn" href="#" onclick="location.reload(); return false;">🔄 Refresh Now</a>
+      <a class="primary" href="${safeRetryUrl}">Try again</a>
+      <a href="mailto:rahulsinghparmar4@protonmail.com?subject=${supportSubject}">Contact Rahul</a>
     </div>
 
     <footer>
-      <strong>parmar.homes</strong><br>
-      Rahul Singh Parmar • Self-Hosted Infrastructure<br>
-      Last Updated: <span id="updated"></span>
+      <span>${safeIdentity} / ${safeHostname}</span>
+      <span>HTTP 503 · Retry in ${RETRY_SECONDS}s</span>
+      <span>Observed ${safeObservedAt}</span>
     </footer>
-    
-  </div>
-
-  <script>
-    function updateClock() {
-      const now = new Date();
-      document.getElementById('clock').textContent = now.toLocaleString();
-    }
-    
-    updateClock();
-    setInterval(updateClock, 1000);
-    
-    document.getElementById('updated').textContent = new Date().toLocaleString();
-    
-    let secondsRemaining = 30;
-    const countdownElement = document.getElementById('count');
-    
-    const countdownTimer = setInterval(() => {
-      secondsRemaining--;
-      countdownElement.textContent = secondsRemaining;
-      
-      if (secondsRemaining <= 0) {
-        clearInterval(countdownTimer);
-        location.reload();
-      }
-    }, 1000);
-  </script>
+  </main>
 </body>
 </html>`;
+}
