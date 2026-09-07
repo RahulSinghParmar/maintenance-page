@@ -3,7 +3,6 @@ const FAILURE_STATUS_CODES = new Set([
 ]);
 
 const PORTFOLIO_ZONE = "rahulsinghparmar.site";
-const HEALTH_PATH = "/api/health";
 const RETRY_SECONDS = 45;
 
 export default {
@@ -15,14 +14,14 @@ export default {
         return serveMaintenancePage(request);
       }
 
-      // When Coolify stops an application, Traefik removes its router and
-      // returns a plain 404. Probe the portfolio health endpoint before
-      // deciding whether that 404 belongs to the application or the origin.
+      // When Coolify stops the portfolio, Traefik removes its router and
+      // returns its exact default 19-byte plain-text 404. Match only that
+      // response so legitimate application 404 pages pass through unchanged.
       if (
         response.status === 404 &&
         ["GET", "HEAD"].includes(request.method) &&
         isPortfolioHostname(new URL(request.url).hostname) &&
-        !(await portfolioOriginIsHealthy(request))
+        (await isUnroutedOrigin404(response))
       ) {
         return serveMaintenancePage(request);
       }
@@ -38,25 +37,27 @@ function isPortfolioHostname(hostname) {
   return hostname === PORTFOLIO_ZONE || hostname.endsWith(`.${PORTFOLIO_ZONE}`);
 }
 
-async function portfolioOriginIsHealthy(request) {
-  const healthUrl = new URL(request.url);
-  healthUrl.pathname = HEALTH_PATH;
-  healthUrl.search = "";
-  healthUrl.hash = "";
+async function isUnroutedOrigin404(response) {
+  const contentType = (response.headers.get("content-type") || "").toLowerCase();
+
+  if (!contentType.startsWith("text/plain")) {
+    return false;
+  }
+
+  const contentLength = response.headers.get("content-length");
+
+  if (contentLength && contentLength !== "19") {
+    return false;
+  }
+
+  // HEAD responses have no readable body, so the origin's content metadata is
+  // the strongest available signature.
+  if (response.body === null) {
+    return contentLength === "19";
+  }
 
   try {
-    const response = await fetch(
-      new Request(healthUrl, {
-        method: "GET",
-        headers: { accept: "application/json" },
-        redirect: "manual"
-      })
-    );
-
-    return (
-      response.status === 200 &&
-      (response.headers.get("content-type") || "").includes("application/json")
-    );
+    return (await response.clone().text()).trim() === "404 page not found";
   } catch {
     return false;
   }

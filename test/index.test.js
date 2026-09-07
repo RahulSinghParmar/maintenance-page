@@ -35,23 +35,21 @@ test("returns maintenance for a stopped portfolio route", async () => {
       assert.equal(response.headers.get("retry-after"), "45");
       assert.equal(response.headers.get("x-robots-tag"), "noindex, nofollow, noarchive");
       assert.match(await response.text(), /Portfolio origin/);
-      assert.deepEqual(calls, ["/unavailable", "/api/health"]);
+      assert.deepEqual(calls, ["/unavailable"]);
     }
   );
 });
 
-test("preserves a real portfolio 404 while the application is healthy", async () => {
-  let call = 0;
+test("preserves a real HTML portfolio 404", async () => {
+  let calls = 0;
 
   await withFetch(
     async () => {
-      call += 1;
-      return call === 1
-        ? new Response("portfolio not found", {
-            status: 404,
-            headers: { "content-type": "text/html" }
-          })
-        : Response.json({ status: "ok" });
+      calls += 1;
+      return new Response("portfolio not found", {
+        status: 404,
+        headers: { "content-type": "text/html" }
+      });
     },
     async () => {
       const response = await worker.fetch(
@@ -60,7 +58,46 @@ test("preserves a real portfolio 404 while the application is healthy", async ()
 
       assert.equal(response.status, 404);
       assert.equal(await response.text(), "portfolio not found");
-      assert.equal(call, 2);
+      assert.equal(calls, 1);
+    }
+  );
+});
+
+test("preserves an unrelated plain-text portfolio 404", async () => {
+  await withFetch(
+    async () =>
+      new Response("application route not found", {
+        status: 404,
+        headers: { "content-type": "text/plain; charset=utf-8" }
+      }),
+    async () => {
+      const response = await worker.fetch(
+        new Request("https://rahulsinghparmar.site/another-missing-route")
+      );
+
+      assert.equal(response.status, 404);
+      assert.equal(await response.text(), "application route not found");
+    }
+  );
+});
+
+test("does not trust content length without matching the Traefik body", async () => {
+  await withFetch(
+    async () =>
+      new Response("custom not-found xx", {
+        status: 404,
+        headers: {
+          "content-length": "19",
+          "content-type": "text/plain; charset=utf-8"
+        }
+      }),
+    async () => {
+      const response = await worker.fetch(
+        new Request("https://rahulsinghparmar.site/custom-plain-404")
+      );
+
+      assert.equal(response.status, 404);
+      assert.equal(await response.text(), "custom not-found xx");
     }
   );
 });
@@ -116,7 +153,14 @@ test("returns maintenance when the origin request throws", async () => {
 
 test("returns an empty maintenance body for HEAD requests", async () => {
   await withFetch(
-    async () => new Response(null, { status: 503 }),
+    async () =>
+      new Response(null, {
+        status: 404,
+        headers: {
+          "content-length": "19",
+          "content-type": "text/plain; charset=utf-8"
+        }
+      }),
     async () => {
       const response = await worker.fetch(
         new Request("https://rahulsinghparmar.site/", { method: "HEAD" })
