@@ -1,53 +1,85 @@
-# Cloudflare maintenance fallback
+# Cloudflare Maintenance Fallback
 
-An edge-hosted fallback for Rahul Singh Parmar's self-hosted services and portfolio. The Worker proxies healthy requests unchanged and returns a self-contained HTTP `503` page when the tunnel, reverse proxy, host, or application origin is unavailable.
+[![Worker checks](https://github.com/RahulSinghParmar/maintenance-page/actions/workflows/check.yml/badge.svg)](https://github.com/RahulSinghParmar/maintenance-page/actions/workflows/check.yml)
 
-## How a stopped portfolio is detected
+An edge-hosted fallback for self-hosted services and a personal portfolio. A small Cloudflare Worker passes healthy responses through and returns a self-contained **HTTP 503** page when selected origin errors occur.
 
-When Coolify stops the portfolio container, Traefik removes its router and returns its default HTTP response: `404`, `Content-Type: text/plain`, and the 19-byte body `404 page not found`. The Worker matches that precise signature without making a second request through the same route.
+![Actual fallback at office.parmar.homes, captured on 23 October 2026](docs/images/office-live.png)
 
-- Exact Traefik default `404` signature on a portfolio hostname: return the maintenance page with HTTP `503`.
-- Any other application `404`: preserve the original response unchanged.
-- Origin status `500`, `502`, `503`, `504`, `520`, `521`, `522`, `523`, `524`, `525`, `526`, or `530`: return the maintenance page immediately.
-- Network exception: return the maintenance page immediately.
+This is a real browser capture of [office.parmar.homes](https://office.parmar.homes/), not a mockup. That is an operational service and may recover; it is not a permanent outage demo. Built by [Rahul Singh Parmar](https://github.com/RahulSinghParmar).
 
-The Traefik-signature behavior is intentionally limited to `rahulsinghparmar.site`; unrelated `parmar.homes` applications keep their normal `404` behavior. This avoids same-zone Worker recursion and does not add an extra origin request to ordinary traffic.
+## Features
 
-## Required Worker routes
+- One origin fetch per incoming request; normal responses preserve their status, headers and body.
+- Fallback for selected origin/Cloudflare errors and fetch exceptions.
+- Portfolio-only heuristic for the plain-text 404 returned by an unrouted Traefik service.
+- HTTP 503, `Retry-After: 45`, browser/CDN no-store directives and no-index headers.
+- Inline HTML/CSS with no scripts, remote fonts, images or external template dependencies.
+- Responsive light/dark styling, visible keyboard focus and reduced-motion support.
+- A generic availability message that does not pretend to diagnose the private infrastructure.
 
-Configure these as **Routes**, not Custom Domains:
+## Architecture
 
-```text
-*.parmar.homes/*
-rahulsinghparmar.site/*
-*.rahulsinghparmar.site/*
+```mermaid
+flowchart TD
+    A[Browser or API client] --> B[Cloudflare Worker Route]
+    B --> C[Single origin fetch]
+    C --> D{Classify response}
+    D -->|Normal response or ordinary 404| E[Return unchanged]
+    D -->|Selected error or fetch exception| F[Inline HTTP 503 page]
+    D -->|Portfolio Traefik 404 signature| F
+    F --> G[Browser may reload after 45 seconds]
+    G --> B
 ```
 
-The exact apex route is required because `*.rahulsinghparmar.site/*` does not match `rahulsinghparmar.site` itself. Keep more-specific application Worker routes above or outside this catch-all design when adding future Workers.
+**The current HTML is embedded in `src/index.js`.** It is not loaded from GitHub at runtime. Updating the page or classification rules requires a Worker deployment. A GitHub commit alone does not update production unless a separate deployment integration is configured.
 
 ## Response contract
 
-The fallback returns:
+| Origin result | Behavior |
+| --- | --- |
+| Healthy responses, redirects and ordinary application 4xx | Pass through unchanged |
+| `500`, `502`, `503`, `504`, `520`, `521`, `522`, `523`, `524`, `525`, `526`, `530` | Maintenance HTML with HTTP 503 |
+| Origin fetch throws | Maintenance HTML with HTTP 503 |
+| Portfolio GET/HEAD matching the Traefik plain-text 404 heuristic | Maintenance HTML with HTTP 503 |
+| `parmar.homes` application 404 | Preserve the application response |
+| HEAD fallback | Same fallback headers with an empty body |
 
-- HTTP `503 Service Unavailable`
-- `Retry-After: 45`
-- no-store cache directives for browsers and Cloudflare
-- `X-Robots-Tag: noindex, nofollow, noarchive`
-- restrictive CSP, framing, referrer and content-type headers
-- a responsive, accessible, light/dark-aware page with no external assets
+The 404 heuristic is limited to `rahulsinghparmar.site` and its subdomains. It is not independent proof that a container stopped. No Worker-level replay of non-idempotent requests is implemented.
 
-The HTML does not claim that Docker, the tunnel, or the reverse proxy is in a particular state. It only reports what the Worker can prove: Cloudflare's edge is responding and the private origin is unavailable.
+## Check locally
 
-## Development
+Use a supported Node.js release; CI checks Node 22 and 24:
 
-```bash
+```sh
+git clone https://github.com/RahulSinghParmar/maintenance-page.git
+cd maintenance-page
+npm run check
+```
+
+Tests use Node's built-in runner and mocked origin requests. No install, Cloudflare token or production outage is required. Node mocks do not replace tests in the Workers runtime.
+
+## Deploy intentionally
+
+Read the [operations runbook](docs/OPERATIONS.md) first. The documented pattern uses **Worker Routes in front of an existing origin**, not a Custom Domain that makes this fallback Worker the origin. Actual account/zone/route bindings are not tracked in `wrangler.json`.
+
+```sh
 npx wrangler dev
+# Production mutation: run only after verifying account, Worker and routes.
 npx wrangler deploy
 ```
 
-After deployment, test both conditions:
+Wrangler is currently unpinned; pin and validate it before adding reproducible release automation. Repository CI performs checks only and does not deploy Cloudflare.
 
-1. With the portfolio healthy, verify a real missing route remains the portfolio's own `404` page.
-2. Stop the Coolify application, then verify the apex and `www` resolve to the maintenance response with HTTP `503` and `Retry-After: 45`.
+## Documentation
 
-Do not cache the maintenance response and do not enable an "always maintenance" Custom Domain for the zone.
+- [Architecture and limits](docs/ARCHITECTURE.md)
+- [Deployment, verification, troubleshooting and rollback](docs/OPERATIONS.md)
+- [Review and prioritized improvements](docs/REVIEW.md)
+- [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+
+## Verified reference
+
+On 23 October 2026 the office URL returned HTTP 503 with `Server: cloudflare`, `Retry-After: 45`, no-store directives and the expected security headers. The page matches the repository's response contract. Actual Cloudflare route bindings, DNS, deployed version and private-origin cause were not inspected.
+
+No license is currently declared. A license choice remains a maintainer decision before advertising unrestricted reuse.
